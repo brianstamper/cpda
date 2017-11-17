@@ -1,0 +1,332 @@
+---
+title: "Data Preparation - Dataset Description Report"
+author: "Brian Stamper"
+date: "November 13, 2017"
+output:
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introduction
+
+In this stage we will load all of the available data, recode variable names to more useful forms, and cast "long" data into a "wide" shape. The datasets will be organized so as to match either on SOC, CIPS, or NAICS codes. Any dataset with additional preparation applied will be built as a `data.table` and saved in native **R** `.Rdata` format.
+
+```{r prelims, warning=FALSE}
+# Package dependencies
+library(readxl)
+library(data.table)
+if(!dir.exists('data/bls')) dir.create('data/bls')
+if(!dir.exists('data/ipeds')) dir.create('data/ipeds')
+if(!dir.exists('data/ohiolmi')) dir.create('data/ohiolmi')
+if(!dir.exists('data/onet')) dir.create('data/onet')
+if(!dir.exists('data/processed')) dir.create('data/processed')
+
+```
+
+### Ohio Labor Market Information
+
+This data must be downloaded through a web interface at http://ohiolmi.com/proj/OhioJobOutlook.htm. We select area "Ohio to 2024", report "All Ohio Tables", report format "Excel". The resulting file is saved as `data/ohiolmi/Ohio2024.xlsx`.
+
+#### Ohio Job Outlook - Occupation Detail
+
+```{r ohiolmi-occ}
+
+# Function to check the four-digit extension to the soc code is numeric and not all zero
+is_soc6 <- function(x) {
+  subsoc <- substr(x, 4, 7)
+  grepl('[0-9]{4}', subsoc) & subsoc != '0000'
+}
+
+# The parameters to read_excel() were determined manually by opening the data in Excel
+ohiolmi_occ <- setDT(read_excel(path = 'data/ohiolmi/Ohio2024.xlsx', 
+                                sheet = 'Occupation Detail', 
+                                skip = 5,
+                                n_max = 756,
+                                na = 'N/A'))
+
+# Visual inspection of the data before and after the following statement is used to confirm
+# the correct names are being applied to the correct columns.
+names(ohiolmi_occ) <- c('soc_code_lmi',
+                        'soc_desc_lmi',
+                        'empl_now_lmi',
+                        'occ_empl_projected_lmi',
+                        'occ_empl_change_lmi',
+                        'occ_empl_change_pct_lmi',
+                        'ann_growth_lmi',
+                        'ann_replace_lmi',
+                        'ann_total_lmi',
+                        'med_wage_lmi',
+                        'note_lmi',
+                        'ed_needed_lmi',
+                        'exp_needed_lmi',
+                        'otj_train_needed_lmi')
+
+# Remove aggregation rows and keep only true SOC-6
+ohiolmi_occ <- ohiolmi_occ[is_soc6(soc_code_lmi)]
+
+# Convert annualized data to hourly - is annual if note column has '††' or '†††'
+# matching note_lmi %in% c('††', '†††') doesn't work for some reason, so after checking
+# one-to-one correspondence with nchar() using
+# table(nchar(ohiolmi_occ$note_lmi), ohiolmi_occ$note_lmi, useNA = 'always')
+# we determine we can use nchar() as a proxy to note
+ohiolmi_occ[is.na(note_lmi), note_lmi := '']
+ohiolmi_occ[nchar(note_lmi) %in% 2:3, med_wage_lmi := round(med_wage_lmi / 2080, 2)]
+
+# Create factor labels
+ohiolmi_occ$ed_needed_lmi <- factor(ohiolmi_occ$ed_needed_lmi,
+                                        levels = c('No formal educational credential',
+                                                   'Less than high school',
+                                                   'High school diploma or equivalent',
+                                                   'Postsecondary non-degree award',
+                                                   'Some college, no degree',
+                                                   'Associate\'s degree',
+                                                   'Bachelor\'s degree',
+                                                   'Master\'s degree',
+                                                   'Doctoral or professional degree'))
+
+
+ohiolmi_occ$exp_needed_lmi <- factor(ohiolmi_occ$exp_needed_lmi,
+                                         levels = c('None',
+                                                    'Less than 5 years',
+                                                    '5 years or more'))
+
+
+ohiolmi_occ$otj_train_needed_lmi <- factor(ohiolmi_occ$otj_train_needed_lmi,
+                                               levels = c('None',
+                                                          'Internship/residency',
+                                                          'Short-term on-the-job training',
+                                                          'Moderate-term on-the-job training',
+                                                          'Long-term on-the-job training',
+                                                          'Apprenticeship'))
+
+# Display the data structure at this point
+str(ohiolmi_occ)
+
+# Note that there are 9/733 occupations with missing wages - will need to deal with missing later.
+save(ohiolmi_occ, file = 'data/processed/ohiolmi_occ.rds')
+```
+
+#### Ohio Job Outlook - Industry Detail
+
+```{r ohiolmi-ind}
+# The parameters to read_excel() were determined manually by opening the data in Excel
+ohiolmi_ind <- setDT(read_excel(path = 'data/ohiolmi/Ohio2024.xlsx', 
+                                sheet = 'Industry Detail', 
+                                skip = 5,
+                                n_max = 251))
+
+# Visual inspection of the data before and after the following statement is used to confirm
+# the correct names are being applied to the correct columns.
+names(ohiolmi_ind) <- c('naics_code_lmi',
+                        'naics_desc_lmi',
+                        'ind_empl_now_lmi',
+                        'ind_empl_projected_lmi',
+                        'ind_empl_change_lmi',
+                        'ind_empl_change_pct_lmi')
+
+# Remove aggregation rows
+ohiolmi_ind <- ohiolmi_ind[!is.na(naics_code_lmi) & grepl('[0-9]+', naics_code_lmi)]
+
+str(ohiolmi_ind)
+
+save(ohiolmi_ind, file = 'data/processed/ohiolmi_ind.rds')
+```
+
+
+
+### O*Net Resource Center 
+
+There is a large amount of long form data here. Casting it all wide in anticipation of the modeling phase may
+in fact be inefficient and time prohibitive. Restructuring of these files will be revisited once more
+detail about the needs of the modeling phase come to light.
+
+```{r onet}
+# Downloader function to save repetitive code and file transfers
+onet_loader <- function(fn, ...) {
+  if(!file.exists(paste0('data/onet/', fn))) {
+    download.file(url = paste0('https://www.onetcenter.org/dl_files/database/db_22_1_text/', fn),
+                  destfile = paste0('data/onet/', fn),
+                  mode = 'wb')
+  }
+  fread(paste0('data/onet/', fn), na.strings = 'n/a', ...)
+}
+
+#Knowledge, Skills, Abilities
+onet_knowledge <- onet_loader('Knowledge.txt')
+onet_skills <- onet_loader('Skills.txt')
+onet_abilities <- onet_loader('Abilities.txt')
+
+# Separate the six-digit SOC and filter for cases where the suffix == 00 (the aggregate)
+onet_knowledge[, soc_code := substr(`O*NET-SOC Code`, 1, 7)]
+onet_knowledge[, soc_suff := substr(`O*NET-SOC Code`, 9, 10)]
+onet_knowledge <- onet_knowledge[soc_suff == '00']
+
+# rename and select relevant variables
+setnames(onet_knowledge,
+         old = c('Element ID',
+                 'Element Name',
+                 'Scale ID',
+                 'Data Value'),
+         new = c('elem_id',
+                 'elem_name',
+                 'scale_id',
+                 'value'))
+
+onet_knowledge <- subset(onet_knowledge,
+                         select = c('soc_code',
+                                    'elem_id',
+                                    'elem_name',
+                                    'scale_id',
+                                    'value'))
+
+# Cast the 'importance' next to the 'level' for each soc/knowledge
+onet_knowledge <- dcast(onet_knowledge, soc_code + elem_id + elem_name ~ scale_id, value.var = 'value')
+
+
+
+
+# For each occupation, we want to know if a given knowledge area is
+# in the upper quartile for importance (Scale ID = 'IM') *AND* 
+# competency required (Scale ID = 'LV')
+# Compute the upper quantile break point:
+# (using quantile because experimenting with different break points)
+onet_knowledge[, high_IM := quantile(IM, .5), by = 'elem_id']
+onet_knowledge[, high_LV := quantile(LV, .5), by = 'elem_id']
+
+# Determine if both importance and level are above both for the occupation:
+onet_knowledge[, high_IMLV := IM > high_IM & LV > high_LV]
+
+# Cast the score wide over the knowledge areas:
+onet_knowledge <- dcast(onet_knowledge, soc_code ~ elem_id, value.var = 'high_IMLV')
+
+save(onet_knowledge, file = 'data/processed/onet_knowledge.rds')
+
+str(onet_knowledge)
+str(onet_skills)
+str(onet_abilities)
+
+#Education, Experience, Training
+onet_educ <- onet_loader('Education%2C%20Training%2C%20and%20Experience.txt')
+onet_educ_cats <- onet_loader('Education%2C%20Training%2C%20and%20Experience%20Categories.txt')
+onet_job_zones <- onet_loader('Job%20Zones.txt')
+onet_job_zone_ref <- onet_loader('Job%20Zone%20Reference.txt')
+
+str(onet_educ)
+str(onet_educ_cats)
+str(onet_job_zones)
+str(onet_job_zone_ref)
+
+#Interests, Work Values, Work Styles
+onet_interests <- onet_loader('Interests.txt')
+onet_work_values <- onet_loader('Work%20Values.txt')
+onet_work_styles <- onet_loader('Work%20Styles.txt')
+
+str(onet_interests)
+str(onet_work_values)
+str(onet_work_styles)
+
+#Work Context
+onet_work_context <- onet_loader('Work%20Context.txt')
+onet_work_context_cats <- onet_loader('Work%20Context%20Categories.txt')
+
+str(onet_work_context)
+str(onet_work_context_cats)
+
+```
+
+### National Center for Education Statistics
+
+https://nces.ed.gov/ipeds/
+
+Integrated Postsecondary Education Data System data was downloaded through the web interface, limiting for
+graduation data in Ohio. Here we only show how the data can be loaded, there is no need to re-save the data at this time.
+
+```{r ipeds}
+ipeds_complete_total <- fread('data/ipeds/CSV_1162017-305.csv', na.strings = '')
+names(ipeds_complete_total) <- c('ipeds_code',
+                                 'ipeds_name',
+                                 'year_ipeds',
+                                 'major_n_ipeds',
+                                 'cip_code_ipeds',
+                                 'cip_desc_ipeds',
+                                 'degr_level_ipeds',
+                                 'completers_n_ipeds',
+                                 'IDX_C')
+str(ipeds_complete_total)
+
+ipeds_progs_offered <- fread('data/ipeds/CSV_1162017-601.csv', na.strings = '')
+names(ipeds_progs_offered) <- c('ipeds_code',
+                                'ipeds_name',
+                                'year_ipeds',
+                                'cip_code_ipeds',
+                                'cip_desc_ipeds',
+                                'programs_n',
+                                'programs_dist_n',
+                                'IDX_C')
+str(ipeds_progs_offered)
+
+ipeds_grad_rates <- fread('data/ipeds/CSV_1162017-865.csv', na.strings = '')
+names(ipeds_grad_rates) <- c('ipeds_code',
+                             'ipeds_name',
+                             'year_ipeds',
+                             'grad_rate_total_ipeds',
+                             'grad_rate_pell_ipeds',
+                             'grad_rate_stafford_non_pell_ipeds',
+                             'grad_rate_non_stafford_non_pell_ipeds')
+str(ipeds_grad_rates)
+
+```
+
+
+### Bureau of Labor Statistics 
+
+https://www.bls.gov/jlt/
+
+Job Openings and Labor Turnover Survey
+
+```{r bls}
+bls_loader <- function(fn, ...) {
+  if(!file.exists(paste0('data/bls/', fn))) {
+    download.file(url = paste0('https://download.bls.gov/pub/time.series/', fn),
+                  destfile = paste0('data/bls/', fn),
+                  mode = 'wb')
+  }
+  fread(paste0('data/bls/', fn), na.strings = 'n/a', ...)
+}
+
+bls_jolts <- bls_loader('jt/jt.data.1.AllItems')
+
+# Extract relevant parts of the series_id
+bls_jolts[, seasonal_code := substr(series_id, 3, 3)]
+bls_jolts[, industry_code := substr(series_id, 4, 9)]
+bls_jolts[, region_code := substr(series_id, 10, 11)]
+bls_jolts[, dataelement_code := substr(series_id, 12, 13)]
+bls_jolts[, ratelevel_code := substr(series_id, 14, 14)]
+
+# fill = TRUE to handle missing varname in header, which is inconsequential
+bls_jolts_dataelement <- bls_loader('jt/jt.dataelement', fill = TRUE)
+bls_jolts_industry <- bls_loader('jt/jt.industry', fill = TRUE, colClasses = c(industry_code = 'character'))
+
+# Reduce data by taking only 2016, annual, total US, by level
+bls_jolts <- bls_jolts[year == '2016' & period == 'M13' & region_code == '00' & ratelevel_code == 'L']
+
+# Get readable dataelement names
+bls_jolts <- merge(bls_jolts, bls_jolts_dataelement, by = 'dataelement_code')
+
+# Cast the data wide
+bls_jolts <- dcast(bls_jolts, industry_code ~ dataelement_text, value.var = 'value')
+
+# Merge in industry descriptors
+bls_jolts <- merge(bls_jolts, bls_jolts_industry, by = 'industry_code')
+
+# Compute a growth rate
+bls_jolts[, growth := Hires / `Total separations` - 1]
+
+str(bls_jolts)
+
+save(bls_jolts, file = 'data/processed/bls_jolts.rds')
+```
+
