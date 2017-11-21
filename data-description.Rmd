@@ -156,8 +156,8 @@ onet_loader <- function(fn, ...) {
 
 #Knowledge, Skills, Abilities
 onet_knowledge <- onet_loader('Knowledge.txt')
-onet_skills <- onet_loader('Skills.txt')
-onet_abilities <- onet_loader('Abilities.txt')
+#onet_skills <- onet_loader('Skills.txt')
+#onet_abilities <- onet_loader('Abilities.txt')
 
 # Separate the six-digit SOC and filter for cases where the suffix == 00 (the aggregate)
 onet_knowledge[, soc_code := substr(`O*NET-SOC Code`, 1, 7)]
@@ -193,8 +193,8 @@ onet_knowledge <- dcast(onet_knowledge, soc_code + elem_id + elem_name ~ scale_i
 # competency required (Scale ID = 'LV')
 # Compute the upper quantile break point:
 # (using quantile because experimenting with different break points)
-onet_knowledge[, high_IM := quantile(IM, .5), by = 'elem_id']
-onet_knowledge[, high_LV := quantile(LV, .5), by = 'elem_id']
+onet_knowledge[, high_IM := quantile(IM, .75), by = 'elem_id']
+onet_knowledge[, high_LV := quantile(LV, .75), by = 'elem_id']
 
 # Determine if both importance and level are above both for the occupation:
 onet_knowledge[, high_IMLV := IM > high_IM & LV > high_LV]
@@ -203,6 +203,12 @@ onet_knowledge[, high_IMLV := IM > high_IM & LV > high_LV]
 onet_knowledge <- dcast(onet_knowledge, soc_code ~ elem_id, value.var = 'high_IMLV')
 
 save(onet_knowledge, file = 'data/processed/onet_knowledge.rds')
+
+onet_content_model <- onet_loader('Content%20Model%20Reference.txt')
+names(onet_content_model) <- c('elem_id', 'elem_name', 'elem_desc')
+
+save(onet_content_model, file = 'data/processed/onet_content_model.rds')
+
 
 str(onet_knowledge)
 str(onet_skills)
