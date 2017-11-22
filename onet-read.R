@@ -27,6 +27,9 @@ onet_skills <- onet_loader('Skills.txt')
 onet_abilities <- onet_loader('Abilities.txt')
 onet_work_activities <- onet_loader('Work%20Activities.txt')
 
+im_break <- .75
+lv_break <- .5
+
 onet_ksaw <- rbindlist(list(onet_knowledge, onet_skills, onet_abilities, onet_work_activities))
 
 
@@ -70,7 +73,7 @@ onet_ksaw[, high_IMLV := IM > high_IM & LV > high_LV]
 # Cast the score wide over the knowledge areas:
 onet_ksaw <- dcast(onet_ksaw, soc_code ~ elem_id, value.var = 'high_IMLV')
 
-#save(onet_ksaw, file = 'data/processed/onet_ksaw.rds')
+save(onet_ksaw, file = 'data/processed/onet_ksaw.rds')
 
 
 
