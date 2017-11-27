@@ -5,7 +5,7 @@ load('data/processed/ohiolmi_occ.rds')
 load('data/processed/onet_ksaw.rds')
 load('data/processed/onet_content_model.rds')
 
-# Entropy function for a single variable
+# Entropy function for a single boolean variable
 entropy <- function(x) {
   if(length(x) == 0) return(1)
   p1x <- sum(x) / length(x)
@@ -14,7 +14,7 @@ entropy <- function(x) {
   - p1x * log2(p1x) - p2x * log2(p2x)
 }
 
-# Info gained about x by y - that is, (x|y)
+# Info gained about boolean x by boolean y - that is, (x|y)
 info_gain <- function(x, y) {
   stopifnot(length(x) == length(y))
   p1y <- sum(y) / length(y)
@@ -23,7 +23,7 @@ info_gain <- function(x, y) {
 }
 
 
-# Define high growth as > 10%
+# Define high growth
 ohiolmi_occ[, high_growth := occ_empl_change_pct_lmi > .1]
 
 
@@ -38,7 +38,7 @@ table(ksaw_by_soc$high_growth)
 
 
 # Sample a balanced set for measuring information gain
-set.seed(19)
+set.seed(17)
 ksaw_by_soc_sample <- rbind(
   ksaw_by_soc[(high_growth)][sample(.N, 120)],
   ksaw_by_soc[!(high_growth)][sample(.N, 120)]
@@ -58,8 +58,8 @@ information_gain <- data.table(elem_id = names(information_gain),
 
 ig_explorer <- merge(information_gain, onet_content_model)
 
-nrow(information_gain[elem_ig > .02])
-
+high_info_vars <- information_gain[elem_ig > .01]$elem_id
+#ksaw_by_soc_sample <- subset(ksaw_by_soc_sample, select = c('high_growth', high_info_vars))
 
 train <- sample(c(TRUE, FALSE), nrow(ksaw_by_soc_sample), replace = TRUE, prob = c(.8, .2))
 test <- !train
@@ -73,8 +73,7 @@ test <- !train
 #    message(nt)
     ksaw_train <- ksaw_by_soc_sample[train]#, c(information_gain[elem_ig > ig_thresh]$elem_id, 'high_growth'), with = FALSE] 
     ksaw_test <- ksaw_by_soc_sample[test]#, c(information_gain[elem_ig > ig_thresh]$elem_id, 'high_growth'), with = FALSE]
-    #message(ncol(ksaw_train))
-    ktree <- randomForest(as.factor(high_growth) ~ ., ksaw_train, importance = TRUE, ntree = 1000) 
+    ktree <- randomForest(as.factor(high_growth) ~ ., ksaw_train, importance = TRUE, ntree = 2000) 
     emp_pred <- predict(ktree, ksaw_train)
     table(emp_pred, ksaw_train$high_growth) / nrow(ksaw_train)
     #message(sum(emp_pred == ksaw_train$high_growth) / nrow(ksaw_train))
