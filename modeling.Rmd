@@ -1,0 +1,321 @@
+---
+title: "Modeling"
+author: "Brian Stamper"
+date: "November 27, 2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+## Introduction
+
+For the modeling step at this time we will restrict our focus to the Ohio LMI and O\*Net data, with an eye toward incorporating other data sets in a future iteration of analysis. We will combine the O\*Net data on occupational Knowledge, Skills, Abilities, and Work Activities ("KSAW") and seek which variables most inform which occupations Ohio LMI project to have a high growth rate (> 10% over a ten-year projection). We emphasize that the goal is to create the mechanism which can identify these factors, rather than the predictive capacity of the model itself.
+
+```{r prelims, warning=FALSE}
+# Package dependencies
+library(data.table)
+library(randomForest)
+library(readxl)
+
+
+if(!dir.exists('data/onet')) dir.create('data/onet')
+if(!dir.exists('data/processed')) dir.create('data/processed')
+
+```
+
+### Ohio Labor Market Information
+
+This data must be downloaded through a web interface at http://ohiolmi.com/proj/OhioJobOutlook.htm. We select area "Ohio to 2024", report "All Ohio Tables", report format "Excel". The resulting file is saved as `data/ohiolmi/Ohio2024.xlsx`.
+
+```{r ohiolmi-occ}
+
+# Function to check the four-digit extension to the soc code is numeric and not all zero
+is_soc6 <- function(x) {
+  subsoc <- substr(x, 4, 7)
+  grepl('[0-9]{4}', subsoc) & subsoc != '0000'
+}
+
+# The parameters to read_excel() were determined manually by opening the data in Excel
+ohiolmi_occ <- setDT(read_excel(path = 'data/ohiolmi/Ohio2024.xlsx', 
+                                sheet = 'Occupation Detail', 
+                                skip = 5,
+                                n_max = 756,
+                                na = 'N/A'))
+
+# Visual inspection of the data before and after the following statement is used to confirm
+# the correct names are being applied to the correct columns.
+names(ohiolmi_occ) <- c('soc_code_lmi',
+                        'soc_desc_lmi',
+                        'empl_now_lmi',
+                        'occ_empl_projected_lmi',
+                        'occ_empl_change_lmi',
+                        'occ_empl_change_pct_lmi',
+                        'ann_growth_lmi',
+                        'ann_replace_lmi',
+                        'ann_total_lmi',
+                        'med_wage_lmi',
+                        'note_lmi',
+                        'ed_needed_lmi',
+                        'exp_needed_lmi',
+                        'otj_train_needed_lmi')
+
+# Remove aggregation rows and keep only true SOC-6
+ohiolmi_occ <- ohiolmi_occ[is_soc6(soc_code_lmi)]
+
+# Convert annualized data to hourly - is annual if note column has '††' or '†††'
+# matching note_lmi %in% c('††', '†††') doesn't work for some reason, so after checking
+# one-to-one correspondence with nchar() using
+# table(nchar(ohiolmi_occ$note_lmi), ohiolmi_occ$note_lmi, useNA = 'always')
+# we determine we can use nchar() as a proxy to note
+ohiolmi_occ[is.na(note_lmi), note_lmi := '']
+ohiolmi_occ[nchar(note_lmi) %in% 2:3, med_wage_lmi := round(med_wage_lmi / 2080, 2)]
+
+# Create factor labels
+ohiolmi_occ$ed_needed_lmi <- factor(ohiolmi_occ$ed_needed_lmi,
+                                        levels = c('No formal educational credential',
+                                                   'Less than high school',
+                                                   'High school diploma or equivalent',
+                                                   'Postsecondary non-degree award',
+                                                   'Some college, no degree',
+                                                   'Associate\'s degree',
+                                                   'Bachelor\'s degree',
+                                                   'Master\'s degree',
+                                                   'Doctoral or professional degree'))
+
+
+ohiolmi_occ$exp_needed_lmi <- factor(ohiolmi_occ$exp_needed_lmi,
+                                         levels = c('None',
+                                                    'Less than 5 years',
+                                                    '5 years or more'))
+
+
+ohiolmi_occ$otj_train_needed_lmi <- factor(ohiolmi_occ$otj_train_needed_lmi,
+                                               levels = c('None',
+                                                          'Internship/residency',
+                                                          'Short-term on-the-job training',
+                                                          'Moderate-term on-the-job training',
+                                                          'Long-term on-the-job training',
+                                                          'Apprenticeship'))
+
+# Display the data structure at this point
+str(ohiolmi_occ)
+
+# Note that there are 9/733 occupations with missing wages - will need to deal with missing later.
+save(ohiolmi_occ, file = 'data/processed/ohiolmi_occ.rds')
+```
+
+### O*Net KSAW data
+
+```{r ksaw}
+# Downloader function to save repetitive code and file transfers
+onet_loader <- function(fn, ...) {
+  if(!file.exists(paste0('data/onet/', fn))) {
+    download.file(url = paste0('https://www.onetcenter.org/dl_files/database/db_22_1_text/', fn),
+                  destfile = paste0('data/onet/', fn),
+                  mode = 'wb')
+  }
+  fread(paste0('data/onet/', fn), na.strings = 'n/a', ...)
+}
+
+# data with IM/LV
+onet_knowledge <- onet_loader('Knowledge.txt')
+onet_skills <- onet_loader('Skills.txt')
+onet_abilities <- onet_loader('Abilities.txt')
+onet_work_activities <- onet_loader('Work%20Activities.txt')
+
+im_break <- .75
+lv_break <- .5
+
+onet_ksaw <- rbindlist(list(onet_knowledge, onet_skills, onet_abilities, onet_work_activities))
+
+
+# Separate the six-digit SOC and filter for cases where the suffix == 00 (the aggregate)
+onet_ksaw[, soc_code := substr(`O*NET-SOC Code`, 1, 7)]
+onet_ksaw[, soc_suff := substr(`O*NET-SOC Code`, 9, 10)]
+onet_ksaw <- onet_ksaw[soc_suff == '00']
+
+# rename and select relevant variables
+setnames(onet_ksaw,
+         old = c('Element ID',
+                 'Element Name',
+                 'Scale ID',
+                 'Data Value'),
+         new = c('elem_id',
+                 'elem_name',
+                 'scale_id',
+                 'value'))
+
+onet_ksaw <- subset(onet_ksaw,
+                         select = c('soc_code',
+                                    'elem_id',
+                                    'elem_name',
+                                    'scale_id',
+                                    'value'))
+
+# Cast the 'importance' next to the 'level' for each soc/knowledge
+onet_ksaw <- dcast(onet_ksaw, soc_code + elem_id + elem_name ~ scale_id, value.var = 'value')
+
+# For each occupation, we want to know if a given knowledge area is
+# in the upper quantile for importance (Scale ID = 'IM') *AND* 
+# competency required (Scale ID = 'LV')
+# Compute with the upper quantile break point:
+# (using quantile because experimenting with different break points)
+onet_ksaw[, high_IM := quantile(IM, im_break), by = 'elem_id']
+onet_ksaw[, high_LV := quantile(LV, lv_break), by = 'elem_id']
+
+# Determine if both importance and level are above both for the occupation:
+onet_ksaw[, high_IMLV := IM > high_IM & LV > high_LV]
+
+# Cast the score wide over the knowledge areas:
+onet_ksaw <- dcast(onet_ksaw, soc_code ~ elem_id, value.var = 'high_IMLV')
+
+save(onet_ksaw, file = 'data/processed/onet_ksaw.rds')
+
+# Get the content model lookup for later reference
+onet_content_model <- onet_loader('Content%20Model%20Reference.txt')
+names(onet_content_model) <- c('elem_id', 'elem_name', 'elem_desc')
+onet_content_model$elem_id <- make.names(onet_content_model$elem_id)
+save(onet_content_model, file = 'data/processed/onet_content_model.rds')
+```
+
+
+### Determine an appropriate information gain threshold
+```{r infogain}
+# Entropy function for a single boolean variable, H(Y)
+entropy <- function(y) {
+  if(length(y) == 0) return(1)
+  p1y <- sum(y) / length(y)
+  p2y <- sum(!y) / length(y)
+  if(p1y == 0 | p2y == 0) return(0)
+  - p1y * log2(p1y) - p2y * log2(p2y)
+}
+
+# Conditional entropy function for two boolean variables, H(Y|X)
+cond_entropy <- function(y, x) {
+  stopifnot(length(x) == length(y))
+  p1x <- sum(x) / length(x)
+  p2x <- sum(!x) / length(x)
+  p1x * entropy(y[x]) + p2x * entropy(y[!x])
+}
+
+
+# Info gained about boolean x by boolean y - that is, H(Y) - H(Y|X)
+info_gain <- function(y, x) {
+  stopifnot(length(x) == length(y))
+  entropy(y) - cond_entropy(y, x) 
+}
+
+# Define high growth
+ohiolmi_occ[, high_growth := occ_empl_change_pct_lmi > .1]
+
+# Known issue of not all SOCs match up, ignoring -- can't do much about it
+ksaw_by_soc <- merge(onet_ksaw, 
+                     subset(ohiolmi_occ, select = c('soc_code_lmi', 'high_growth')), 
+                     by.x = 'soc_code', 
+                     by.y = 'soc_code_lmi')
+
+# Run simulations to identify a good information gain threshold
+set.seed(0)
+
+find_ig_thresh <- rbindlist(lapply(1:20, function(x) {
+  rbindlist(lapply(seq(.0, .09, .01), function(ig_thresh) {
+    
+    ksaw_by_soc_sample <- rbind(
+      ksaw_by_soc[(high_growth)][sample(.N, 120)],
+      ksaw_by_soc[!(high_growth)][sample(.N, 120)]
+    )[, -c('soc_code')]
+    names(ksaw_by_soc_sample) <- make.names(names(ksaw_by_soc_sample))
+    
+    
+    # soc_code is the first variable now, high_growth the last
+    ksaw_values <- ksaw_by_soc_sample[, -c('high_growth')]
+
+    
+    information_gain <- sapply(ksaw_values, function(this_value) {
+      info_gain(ksaw_by_soc_sample$high_growth, this_value)
+    })
+    
+    information_gain <- data.table(elem_id = names(information_gain),
+                                   elem_ig = information_gain)
+
+    high_info_vars <- information_gain[elem_ig > ig_thresh]$elem_id
+    ksaw_by_soc_sample_limited <- subset(ksaw_by_soc_sample, select = c('high_growth', high_info_vars))
+    
+    train <- sample(c(TRUE, FALSE), nrow(ksaw_by_soc_sample_limited), replace = TRUE, prob = c(.9, .1))
+    test <- !train
+
+    ksaw_train <- ksaw_by_soc_sample_limited[train]
+    ksaw_test <- ksaw_by_soc_sample_limited[test]
+    ktree <- randomForest(as.factor(high_growth) ~ ., ksaw_train, importance = TRUE, ntree = 1000) 
+    #emp_pred <- predict(ktree, ksaw_train)
+    #table(emp_pred, ksaw_train$high_growth) / nrow(ksaw_train)
+    test_pred <- predict(ktree, ksaw_test)
+    #table(test_pred, ksaw_test$high_growth) / nrow(ksaw_test)
+    data.table(ig_thresh,
+               qom = sum(test_pred == ksaw_test$high_growth) / nrow(ksaw_test), 
+               nvars = length(high_info_vars),
+               crossval = min(rfcv(ksaw_by_soc_sample_limited[, -c('high_growth')],
+                                   as.factor(ksaw_by_soc_sample_limited$high_growth))[['error.cv']]))
+  }))
+}))
+
+
+fit_sum <- rbindlist(lapply(seq(0, .09, .01), function(ig) {
+  data.table(ig_thresh = ig,
+             median = mean(find_ig_thresh[ig_thresh == ig]$qom),
+             mean = mean(find_ig_thresh[ig_thresh == ig]$qom),
+             sd = sd(find_ig_thresh[ig_thresh == ig]$qom),
+             nvars = mean(find_ig_thresh[ig_thresh == ig]$nvars),
+             cv_error = mean(find_ig_thresh[ig_thresh == ig]$crossval))
+}))
+
+boxplot(find_ig_thresh$crossval ~ find_ig_thresh$ig_thresh)
+boxplot(find_ig_thresh$qom ~ find_ig_thresh$ig_thresh)
+
+```
+
+### Identify informative variables
+
+```{r informative}
+ig_thresh <- 0.04
+
+ksaw_by_soc_sample <- rbind(
+  ksaw_by_soc[(high_growth)][sample(.N, 120)],
+  ksaw_by_soc[!(high_growth)][sample(.N, 120)]
+)[, -c('soc_code')]
+names(ksaw_by_soc_sample) <- make.names(names(ksaw_by_soc_sample))
+
+
+# soc_code is the first variable now, high_growth the last
+ksaw_values <- ksaw_by_soc_sample[, -c('high_growth')]
+
+
+information_gain <- sapply(ksaw_values, function(this_value) {
+  info_gain(ksaw_by_soc_sample$high_growth, this_value)
+})
+
+information_gain <- data.table(elem_id = names(information_gain),
+                               elem_ig = information_gain)
+
+high_info_vars <- information_gain[elem_ig > ig_thresh][onet_content_model, on = 'elem_id', nomatch = 0]
+
+ksaw_by_soc_sample_limited <- subset(ksaw_by_soc_sample, select = c('high_growth', high_info_vars$elem_id))
+
+train <- sample(c(TRUE, FALSE), nrow(ksaw_by_soc_sample_limited), replace = TRUE, prob = c(.9, .1))
+test <- !train
+
+ksaw_train <- ksaw_by_soc_sample_limited[train]
+ksaw_test <- ksaw_by_soc_sample_limited[test]
+ktree <- randomForest(as.factor(high_growth) ~ ., ksaw_train, importance = TRUE, ntree = 1000) 
+varImpPlot(ktree)
+
+ktree_importance <- merge(onet_content_model, 
+                          by.x = 'elem_id',
+                          by.y = 'rn',
+                          as.data.table(importance(ktree), keep.rownames = TRUE))
+ktree_importance
+```
+
