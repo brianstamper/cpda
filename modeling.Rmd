@@ -5,7 +5,7 @@ date: "November 27, 2017"
 output: html_document
 ---
 
-```{r setup, include=FALSE}
+```{r setup, include = FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
@@ -14,16 +14,17 @@ knitr::opts_chunk$set(echo = TRUE)
 
 For the modeling step at this time we will restrict our focus to the Ohio LMI and O\*Net data, with an eye toward incorporating other data sets in a future iteration of analysis. We will combine the O\*Net data on occupational Knowledge, Skills, Abilities, and Work Activities ("KSAW") and seek which variables most inform which occupations Ohio LMI project to have a high growth rate (> 10% over a ten-year projection). We emphasize that the goal is to create the mechanism which can identify these factors, rather than the predictive capacity of the model itself.
 
-```{r prelims, warning=FALSE}
-# Package dependencies
+```{r prelims, warning = FALSE, echo = FALSE}
+# Package dependencies and data directories
 library(data.table)
 library(randomForest)
 library(readxl)
-
+library(ggplot2)
 
 if(!dir.exists('data/onet')) dir.create('data/onet')
+if(!dir.exists('data/ohiolmi')) dir.create('data/ohiolmi') # should already exist from manual data download
 if(!dir.exists('data/processed')) dir.create('data/processed')
-
+if(!dir.exists('out')) dir.create('out')
 ```
 
 ### Ohio Labor Market Information
@@ -120,16 +121,10 @@ onet_loader <- function(fn, ...) {
   fread(paste0('data/onet/', fn), na.strings = 'n/a', ...)
 }
 
-# data with IM/LV
-onet_knowledge <- onet_loader('Knowledge.txt')
-onet_skills <- onet_loader('Skills.txt')
-onet_abilities <- onet_loader('Abilities.txt')
-onet_work_activities <- onet_loader('Work%20Activities.txt')
-
-im_break <- .75
-lv_break <- .5
-
-onet_ksaw <- rbindlist(list(onet_knowledge, onet_skills, onet_abilities, onet_work_activities))
+onet_ksaw <- rbindlist(list(onet_loader('Knowledge.txt'),
+                            onet_loader('Skills.txt'),
+                            onet_loader('Abilities.txt'),
+                            onet_loader('Work%20Activities.txt')))
 
 
 # Separate the six-digit SOC and filter for cases where the suffix == 00 (the aggregate)
@@ -159,10 +154,11 @@ onet_ksaw <- subset(onet_ksaw,
 onet_ksaw <- dcast(onet_ksaw, soc_code + elem_id + elem_name ~ scale_id, value.var = 'value')
 
 # For each occupation, we want to know if a given knowledge area is
-# in the upper quantile for importance (Scale ID = 'IM') *AND* 
-# competency required (Scale ID = 'LV')
-# Compute with the upper quantile break point:
-# (using quantile because experimenting with different break points)
+# in the upper quartile for importance (Scale ID = 'IM') *AND* 
+# upper half for competency required (Scale ID = 'LV')
+im_break <- .75
+lv_break <- .5
+
 onet_ksaw[, high_IM := quantile(IM, im_break), by = 'elem_id']
 onet_ksaw[, high_LV := quantile(LV, lv_break), by = 'elem_id']
 
@@ -172,17 +168,58 @@ onet_ksaw[, high_IMLV := IM > high_IM & LV > high_LV]
 # Cast the score wide over the knowledge areas:
 onet_ksaw <- dcast(onet_ksaw, soc_code ~ elem_id, value.var = 'high_IMLV')
 
+# Make the variable names syntactically valid
+names(onet_ksaw) <- make.names(names(onet_ksaw))
+
+# Save the processed KSAW data
 save(onet_ksaw, file = 'data/processed/onet_ksaw.rds')
 
-# Get the content model lookup for later reference
+
+# Also get the content model lookup for later reference
 onet_content_model <- onet_loader('Content%20Model%20Reference.txt')
 names(onet_content_model) <- c('elem_id', 'elem_name', 'elem_desc')
+# Match the elem_id to the variable names in onet_ksaw
 onet_content_model$elem_id <- make.names(onet_content_model$elem_id)
 save(onet_content_model, file = 'data/processed/onet_content_model.rds')
 ```
 
+### Identify high growth occupations
+We define a high growth occupation using the Ohio LMI Job Outlook data indicating
+a projected employment growth of 10% over 10 years. We then attach this indicator
+to the KSAW high IM/LV indicators.
+
+```{r highgrowth}
+# Define high growth
+ohiolmi_occ[, high_growth := occ_empl_change_pct_lmi > .1]
+
+# Known issue of not all SOCs match up, ignoring -- can't do much about it
+ksaw_by_soc <- merge(onet_ksaw, 
+                     subset(ohiolmi_occ, select = c('soc_code_lmi', 'high_growth')), 
+                     by.x = 'soc_code', 
+                     by.y = 'soc_code_lmi')
+
+```
+
 
 ### Determine an appropriate information gain threshold
+To identify which variables in the KSAW data are most indicative of whether an 
+occupation will or will not fall into the high growth range we measure the 
+information gain with respect to the high growth indicator. The following process
+is used to determine an ideal value for an information gain threshold for
+this analysis.
+
+From prior experimentation we've determined that this threshold must
+lie somewhere between 0 (which would allow all variables to be considered
+informative) and .09 (which would only allow a few variables to pass). To
+determine a good value we try each threshold value from 0 to .09,
+in .01 steps. For each of these values we repeatedly sample sets of occupations,
+each sample containing a balanced set of high-growth and non-high-growth 
+occupations. Then, using those samples, we measure the information gain for
+each variable and throw out any variable that falls below the threshold. With
+the remaining variables we separate the sample into 90%/10% training and test sets.
+A random forest classification tree is built using the training set and evaluated
+against the test set. The results are compiled in a data.table, one row per sample.
+
 ```{r infogain}
 # Entropy function for a single boolean variable, H(Y)
 entropy <- function(y) {
@@ -201,40 +238,32 @@ cond_entropy <- function(y, x) {
   p1x * entropy(y[x]) + p2x * entropy(y[!x])
 }
 
-
-# Info gained about boolean x by boolean y - that is, H(Y) - H(Y|X)
+# Information gained about boolean y by boolean x -- that is, H(Y) - H(Y|X)
 info_gain <- function(y, x) {
   stopifnot(length(x) == length(y))
   entropy(y) - cond_entropy(y, x) 
 }
 
-# Define high growth
-ohiolmi_occ[, high_growth := occ_empl_change_pct_lmi > .1]
-
-# Known issue of not all SOCs match up, ignoring -- can't do much about it
-ksaw_by_soc <- merge(onet_ksaw, 
-                     subset(ohiolmi_occ, select = c('soc_code_lmi', 'high_growth')), 
-                     by.x = 'soc_code', 
-                     by.y = 'soc_code_lmi')
-
-# Run simulations to identify a good information gain threshold
+# Set seed for reproducibility
 set.seed(0)
 
-find_ig_thresh <- rbindlist(lapply(1:20, function(x) {
-  rbindlist(lapply(seq(.0, .09, .01), function(ig_thresh) {
-    
+# Build a data table with each row being the results of one sample tested,
+# with 50 samples for each threshold 0:9 * .01
+find_ig_thresh <- rbindlist(lapply(0:9 * .01, function(ig_thresh) {
+  message('\nig_thresh: ', ig_thresh, ' begin at ', Sys.time(), '\n')
+  rbindlist(lapply(1:50, function(iteration) {
+    message('iteration: ', iteration)
+    # Prior exploration indicate we have at least 120 in each of high-growth and non-high-growth,
+    # so we can create a balanced sample using up to that amount in each subset
+    half_sample_size <- sample(60:120, 1)
+    message('half_sample_size: ', half_sample_size)
     ksaw_by_soc_sample <- rbind(
-      ksaw_by_soc[(high_growth)][sample(.N, 120)],
-      ksaw_by_soc[!(high_growth)][sample(.N, 120)]
-    )[, -c('soc_code')]
-    names(ksaw_by_soc_sample) <- make.names(names(ksaw_by_soc_sample))
+      ksaw_by_soc[(high_growth)][sample(.N, half_sample_size)],
+      ksaw_by_soc[!(high_growth)][sample(.N, half_sample_size)]
+    )
     
-    
-    # soc_code is the first variable now, high_growth the last
-    ksaw_values <- ksaw_by_soc_sample[, -c('high_growth')]
-
-    
-    information_gain <- sapply(ksaw_values, function(this_value) {
+    # Measure the information gain of each variable according to this sample
+    information_gain <- sapply(ksaw_by_soc_sample[, -c('soc_code', 'high_growth')], function(this_value) {
       info_gain(ksaw_by_soc_sample$high_growth, this_value)
     })
     
@@ -246,76 +275,64 @@ find_ig_thresh <- rbindlist(lapply(1:20, function(x) {
     
     train <- sample(c(TRUE, FALSE), nrow(ksaw_by_soc_sample_limited), replace = TRUE, prob = c(.9, .1))
     test <- !train
-
+    
     ksaw_train <- ksaw_by_soc_sample_limited[train]
     ksaw_test <- ksaw_by_soc_sample_limited[test]
+    
     ktree <- randomForest(as.factor(high_growth) ~ ., ksaw_train, importance = TRUE, ntree = 1000) 
-    #emp_pred <- predict(ktree, ksaw_train)
-    #table(emp_pred, ksaw_train$high_growth) / nrow(ksaw_train)
     test_pred <- predict(ktree, ksaw_test)
-    #table(test_pred, ksaw_test$high_growth) / nrow(ksaw_test)
     data.table(ig_thresh,
+               iteration,
+               half_sample_size,
                qom = sum(test_pred == ksaw_test$high_growth) / nrow(ksaw_test), 
-               nvars = length(high_info_vars),
-               crossval = min(rfcv(ksaw_by_soc_sample_limited[, -c('high_growth')],
-                                   as.factor(ksaw_by_soc_sample_limited$high_growth))[['error.cv']]))
+               nvars = length(high_info_vars))
   }))
 }))
+```
+### Interpreting the results
+Looking at the mean quality of match (qom) by information gain threshold, we observe that we
+acheive the a high quality of match, decent stability, and a reasonably interpretable low 
+number of variables if we choose an information gain threshold of 0.06.
+```{r interpret}
+find_ig_thresh[, .(qom_mean = mean(qom),
+                   qom_sd = sd(qom),
+                   nvars_mean = median(nvars)),
+               by = ig_thresh][order(-qom_mean)]
 
+ggplot(find_ig_thresh, aes(x = as.factor(ig_thresh), y = qom)) +
+  geom_boxplot(notch = TRUE) +
+  xlab('Information gain threshold') +
+  ylab('Quality of match')
 
-fit_sum <- rbindlist(lapply(seq(0, .09, .01), function(ig) {
-  data.table(ig_thresh = ig,
-             median = mean(find_ig_thresh[ig_thresh == ig]$qom),
-             mean = mean(find_ig_thresh[ig_thresh == ig]$qom),
-             sd = sd(find_ig_thresh[ig_thresh == ig]$qom),
-             nvars = mean(find_ig_thresh[ig_thresh == ig]$nvars),
-             cv_error = mean(find_ig_thresh[ig_thresh == ig]$crossval))
-}))
-
-boxplot(find_ig_thresh$crossval ~ find_ig_thresh$ig_thresh)
-boxplot(find_ig_thresh$qom ~ find_ig_thresh$ig_thresh)
+ggplot(find_ig_thresh[ig_thresh > .02], aes(x = as.factor(ig_thresh), y = nvars)) +
+  geom_boxplot(notch = TRUE) +
+  xlab('Information gain threshold') +
+  ylab('Number of variables identified')
 
 ```
 
 ### Identify informative variables
+Now using this threshold, we reevaluate the data to seek the most informative variables.
 
 ```{r informative}
-ig_thresh <- 0.04
+ig_thresh <- 0.06
 
+# Measure the information gain of each variable according to the entire dataset
+half_sample_size <- 120
+message('half_sample_size: ', half_sample_size)
 ksaw_by_soc_sample <- rbind(
-  ksaw_by_soc[(high_growth)][sample(.N, 120)],
-  ksaw_by_soc[!(high_growth)][sample(.N, 120)]
-)[, -c('soc_code')]
-names(ksaw_by_soc_sample) <- make.names(names(ksaw_by_soc_sample))
+  ksaw_by_soc[(high_growth)][sample(.N, half_sample_size)],
+  ksaw_by_soc[!(high_growth)][sample(.N, half_sample_size)]
+)
 
-
-# soc_code is the first variable now, high_growth the last
-ksaw_values <- ksaw_by_soc_sample[, -c('high_growth')]
-
-
-information_gain <- sapply(ksaw_values, function(this_value) {
+# Measure the information gain of each variable according to this sample
+information_gain <- sapply(ksaw_by_soc_sample[, -c('soc_code', 'high_growth')], function(this_value) {
   info_gain(ksaw_by_soc_sample$high_growth, this_value)
 })
 
 information_gain <- data.table(elem_id = names(information_gain),
                                elem_ig = information_gain)
 
-high_info_vars <- information_gain[elem_ig > ig_thresh][onet_content_model, on = 'elem_id', nomatch = 0]
-
-ksaw_by_soc_sample_limited <- subset(ksaw_by_soc_sample, select = c('high_growth', high_info_vars$elem_id))
-
-train <- sample(c(TRUE, FALSE), nrow(ksaw_by_soc_sample_limited), replace = TRUE, prob = c(.9, .1))
-test <- !train
-
-ksaw_train <- ksaw_by_soc_sample_limited[train]
-ksaw_test <- ksaw_by_soc_sample_limited[test]
-ktree <- randomForest(as.factor(high_growth) ~ ., ksaw_train, importance = TRUE, ntree = 1000) 
-varImpPlot(ktree)
-
-ktree_importance <- merge(onet_content_model, 
-                          by.x = 'elem_id',
-                          by.y = 'rn',
-                          as.data.table(importance(ktree), keep.rownames = TRUE))
-ktree_importance
+high_info_vars <- information_gain[elem_ig > ig_thresh]$elem_id
 ```
 
