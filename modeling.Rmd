@@ -105,11 +105,11 @@ setnames(onet_ksaw,
                  'value'))
 
 onet_ksaw <- subset(onet_ksaw,
-                         select = c('soc_code',
-                                    'elem_id',
-                                    'elem_name',
-                                    'scale_id',
-                                    'value'))
+                    select = c('soc_code',
+                               'elem_id',
+                               'elem_name',
+                               'scale_id',
+                               'value'))
 
 # Cast the 'importance' next to the 'level' for each soc/knowledge
 onet_ksaw <- dcast(onet_ksaw, soc_code + elem_id + elem_name ~ scale_id, value.var = 'value')
@@ -271,7 +271,7 @@ less than 20 of the original variables.
 ```{r interpret}
 find_ig_thresh[, .(qom_mean = mean(qom),
                    qom_sd = sd(qom),
-                   nvars_mean = median(nvars)),
+                   nvars_mean = mean(nvars)),
                by = ig_thresh][order(ig_thresh)]
 
 ggplot(find_ig_thresh, aes(x = as.factor(ig_thresh), y = qom)) +
