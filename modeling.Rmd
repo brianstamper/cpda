@@ -1,7 +1,7 @@
 ---
 title: "Modeling"
 author: "Brian Stamper"
-date: "November 27, 2017"
+date: "November 29, 2017"
 output: html_document
 ---
 
@@ -14,7 +14,7 @@ knitr::opts_chunk$set(echo = TRUE)
 
 For the modeling step at this time we will restrict our focus to the Ohio LMI and O\*Net data, with an eye toward incorporating other data sets in a future iteration of analysis. We will combine the O\*Net data on occupational Knowledge, Skills, Abilities, and Work Activities ("KSAW") and seek which variables most inform which occupations Ohio LMI project to have a high growth rate (> 10% over a ten-year projection). We emphasize that the goal is to create the mechanism which can identify these factors, rather than the predictive capacity of the model itself.
 
-```{r prelims, warning = FALSE, echo = FALSE}
+```{r prelims, warning = FALSE, message = FALSE}
 # Package dependencies and data directories
 library(data.table)
 library(randomForest)
@@ -66,45 +66,6 @@ names(ohiolmi_occ) <- c('soc_code_lmi',
 # Remove aggregation rows and keep only true SOC-6
 ohiolmi_occ <- ohiolmi_occ[is_soc6(soc_code_lmi)]
 
-# Convert annualized data to hourly - is annual if note column has '††' or '†††'
-# matching note_lmi %in% c('††', '†††') doesn't work for some reason, so after checking
-# one-to-one correspondence with nchar() using
-# table(nchar(ohiolmi_occ$note_lmi), ohiolmi_occ$note_lmi, useNA = 'always')
-# we determine we can use nchar() as a proxy to note
-ohiolmi_occ[is.na(note_lmi), note_lmi := '']
-ohiolmi_occ[nchar(note_lmi) %in% 2:3, med_wage_lmi := round(med_wage_lmi / 2080, 2)]
-
-# Create factor labels
-ohiolmi_occ$ed_needed_lmi <- factor(ohiolmi_occ$ed_needed_lmi,
-                                        levels = c('No formal educational credential',
-                                                   'Less than high school',
-                                                   'High school diploma or equivalent',
-                                                   'Postsecondary non-degree award',
-                                                   'Some college, no degree',
-                                                   'Associate\'s degree',
-                                                   'Bachelor\'s degree',
-                                                   'Master\'s degree',
-                                                   'Doctoral or professional degree'))
-
-
-ohiolmi_occ$exp_needed_lmi <- factor(ohiolmi_occ$exp_needed_lmi,
-                                         levels = c('None',
-                                                    'Less than 5 years',
-                                                    '5 years or more'))
-
-
-ohiolmi_occ$otj_train_needed_lmi <- factor(ohiolmi_occ$otj_train_needed_lmi,
-                                               levels = c('None',
-                                                          'Internship/residency',
-                                                          'Short-term on-the-job training',
-                                                          'Moderate-term on-the-job training',
-                                                          'Long-term on-the-job training',
-                                                          'Apprenticeship'))
-
-# Display the data structure at this point
-str(ohiolmi_occ)
-
-# Note that there are 9/733 occupations with missing wages - will need to deal with missing later.
 save(ohiolmi_occ, file = 'data/processed/ohiolmi_occ.rds')
 ```
 
@@ -204,11 +165,12 @@ ksaw_by_soc <- merge(onet_ksaw,
 ### Determine an appropriate information gain threshold
 To identify which variables in the KSAW data are most indicative of whether an 
 occupation will or will not fall into the high growth range we measure the 
-information gain with respect to the high growth indicator. The following process
-is used to determine an ideal value for an information gain threshold for
-this analysis.
+information gain with respect to the high growth indicator. During the process
+it was discovered that we get better performance from this model if we scale
+the information gain measure as a proportion of the entropy of the parent node.
 
-From prior experimentation we've determined that this threshold must
+The following process is used to determine an ideal value for an information gain threshold for
+this analysis. From prior experimentation it was determined that this threshold must
 lie somewhere between 0 (which would allow all variables to be considered
 informative) and .09 (which would only allow a few variables to pass). To
 determine a good value we try each threshold value from 0 to .09,
@@ -216,7 +178,7 @@ in .01 steps. For each of these values we repeatedly sample sets of occupations,
 each sample containing a balanced set of high-growth and non-high-growth 
 occupations. Then, using those samples, we measure the information gain for
 each variable and throw out any variable that falls below the threshold. With
-the remaining variables we separate the sample into 90%/10% training and test sets.
+the remaining variables we separate the sample into 80%/20% training and test sets.
 A random forest classification tree is built using the training set and evaluated
 against the test set. The results are compiled in a data.table, one row per sample.
 
@@ -239,27 +201,26 @@ cond_entropy <- function(y, x) {
 }
 
 # Information gained about boolean y by boolean x -- that is, H(Y) - H(Y|X)
+# Here the formula has been modified to measure info_gain relative to the parent entropy.
 info_gain <- function(y, x) {
   stopifnot(length(x) == length(y))
-  entropy(y) - cond_entropy(y, x) 
+  (entropy(y) - cond_entropy(y, x)) / entropy(y)
 }
 
 # Set seed for reproducibility
 set.seed(0)
 
 # Build a data table with each row being the results of one sample tested,
-# with 50 samples for each threshold 0:9 * .01
+# with 100 samples for each threshold 0:9 * .01
 find_ig_thresh <- rbindlist(lapply(0:9 * .01, function(ig_thresh) {
-  message('\nig_thresh: ', ig_thresh, ' begin at ', Sys.time(), '\n')
-  rbindlist(lapply(1:50, function(iteration) {
-    message('iteration: ', iteration)
+  rbindlist(lapply(1:100, function(iteration) {
+    
     # Prior exploration indicate we have at least 120 in each of high-growth and non-high-growth,
-    # so we can create a balanced sample using up to that amount in each subset
-    half_sample_size <- sample(60:120, 1)
-    message('half_sample_size: ', half_sample_size)
+    # so we can create a reasonably balanced sample using near that amount in each subset.
+    # (Minimum entropy of the response variable at these settings is 0.971)
     ksaw_by_soc_sample <- rbind(
-      ksaw_by_soc[(high_growth)][sample(.N, half_sample_size)],
-      ksaw_by_soc[!(high_growth)][sample(.N, half_sample_size)]
+      ksaw_by_soc[(high_growth)][sample(.N, sample(100:120, 1))],
+      ksaw_by_soc[!(high_growth)][sample(.N, sample(100:120, 1))]
     )
     
     # Measure the information gain of each variable according to this sample
@@ -267,45 +228,59 @@ find_ig_thresh <- rbindlist(lapply(0:9 * .01, function(ig_thresh) {
       info_gain(ksaw_by_soc_sample$high_growth, this_value)
     })
     
+    # Convert that vector into a data.table
     information_gain <- data.table(elem_id = names(information_gain),
                                    elem_ig = information_gain)
-
+    
+    # Identify which variables are high info at this threshold level
     high_info_vars <- information_gain[elem_ig > ig_thresh]$elem_id
+    
+    # Prepare train/test sets from a subset with only the high info variables
     ksaw_by_soc_sample_limited <- subset(ksaw_by_soc_sample, select = c('high_growth', high_info_vars))
     
-    train <- sample(c(TRUE, FALSE), nrow(ksaw_by_soc_sample_limited), replace = TRUE, prob = c(.9, .1))
+    train <- sample(c(TRUE, FALSE), nrow(ksaw_by_soc_sample_limited), replace = TRUE, prob = c(.8, .2))
     test <- !train
     
     ksaw_train <- ksaw_by_soc_sample_limited[train]
     ksaw_test <- ksaw_by_soc_sample_limited[test]
     
-    ktree <- randomForest(as.factor(high_growth) ~ ., ksaw_train, importance = TRUE, ntree = 1000) 
-    test_pred <- predict(ktree, ksaw_test)
+    # Prevent an error caused by having zero high info variables at a given threshold/sample
+    if(length(high_info_vars) > 0) {
+      ktree <- randomForest(as.factor(high_growth) ~ ., ksaw_train, importance = TRUE, ntree = 1000) 
+      test_pred <- predict(ktree, ksaw_test)
+    } else {
+      test_pred <- !ksaw_test$high_growth  # If zero vars, define the prediction as exactly wrong
+    }
+    
+    # Construct a single-row table summarizing this iteration
     data.table(ig_thresh,
                iteration,
-               half_sample_size,
+               sample_size = nrow(ksaw_by_soc_sample),
                qom = sum(test_pred == ksaw_test$high_growth) / nrow(ksaw_test), 
                nvars = length(high_info_vars))
   }))
 }))
 ```
+
 ### Interpreting the results
-Looking at the mean quality of match (qom) by information gain threshold, we observe that we
-acheive the a high quality of match, decent stability, and a reasonably interpretable low 
-number of variables if we choose an information gain threshold of 0.06.
+Looking at the mean quality of match (qom) by information gain threshold, we observe that there
+is little variation, but also that we can 
+acheive a high quality of match, decent stability, and a reasonably interpretable low 
+number of variables if we choose an information gain threshold such that we are only considering
+less than 20 of the original variables.
 ```{r interpret}
 find_ig_thresh[, .(qom_mean = mean(qom),
                    qom_sd = sd(qom),
                    nvars_mean = median(nvars)),
-               by = ig_thresh][order(-qom_mean)]
+               by = ig_thresh][order(ig_thresh)]
 
 ggplot(find_ig_thresh, aes(x = as.factor(ig_thresh), y = qom)) +
-  geom_boxplot(notch = TRUE) +
+  geom_boxplot() +
   xlab('Information gain threshold') +
   ylab('Quality of match')
 
-ggplot(find_ig_thresh[ig_thresh > .02], aes(x = as.factor(ig_thresh), y = nvars)) +
-  geom_boxplot(notch = TRUE) +
+ggplot(find_ig_thresh, aes(x = as.factor(ig_thresh), y = nvars)) +
+  geom_boxplot() +
   xlab('Information gain threshold') +
   ylab('Number of variables identified')
 
@@ -315,24 +290,17 @@ ggplot(find_ig_thresh[ig_thresh > .02], aes(x = as.factor(ig_thresh), y = nvars)
 Now using this threshold, we reevaluate the data to seek the most informative variables.
 
 ```{r informative}
-ig_thresh <- 0.06
+ig_thresh <- 0.04
 
 # Measure the information gain of each variable according to the entire dataset
-half_sample_size <- 120
-message('half_sample_size: ', half_sample_size)
-ksaw_by_soc_sample <- rbind(
-  ksaw_by_soc[(high_growth)][sample(.N, half_sample_size)],
-  ksaw_by_soc[!(high_growth)][sample(.N, half_sample_size)]
-)
-
-# Measure the information gain of each variable according to this sample
-information_gain <- sapply(ksaw_by_soc_sample[, -c('soc_code', 'high_growth')], function(this_value) {
-  info_gain(ksaw_by_soc_sample$high_growth, this_value)
+information_gain <- sapply(ksaw_by_soc[, -c('soc_code', 'high_growth')], function(this_value) {
+  info_gain(ksaw_by_soc$high_growth, this_value)
 })
 
 information_gain <- data.table(elem_id = names(information_gain),
                                elem_ig = information_gain)
 
-high_info_vars <- information_gain[elem_ig > ig_thresh]$elem_id
+information_gain <- merge(information_gain[elem_ig > ig_thresh], onet_content_model, by = 'elem_id')
+information_gain[order(-elem_ig), -c('elem_desc')]
 ```
 
