@@ -1,0 +1,200 @@
+---
+title: "CPDA Visual Analytics Spring 2018"
+subtitle: "Assignment 2 – “Tableau” Challenge"
+author: "Brian Stamper"
+date: "March 12, 2018"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+# 1. Pre-work
+
+Note that this project was built in `R` using `knitr`, and not Tableau. I've included all
+of the code used to make the graphs and maps in this project.
+
+```{r}
+library(ggplot2)
+library(gridExtra)
+library(rgdal)
+library(data.table)
+library(readxl)
+
+# Read all of the sheets from the Excel data as `data.table`.
+invisible(lapply(excel_sheets('data/FoodEnvironmentAtlas2014.xls'), function(sheet_name) {
+  assign(make.names(sheet_name), 
+         setDT(read_excel('data/FoodEnvironmentAtlas2014.xls', sheet = sheet_name)),
+         envir = .GlobalEnv)
+}))
+
+# Map objects
+# Counties shapefile downloaded from
+# https://www.census.gov/geo/maps-data/data/cbf/cbf_counties.html
+counties_shp <- readOGR('data/cb_2016_us_county_20m', 'cb_2016_us_county_20m', verbose = FALSE)
+counties_fort <- setDT(fortify(counties_shp, region = 'GEOID'))
+```
+
+# 2. Charting obesity
+
+Create a two panel histogram comparing obesity from 2010 and 2012. The 2012 data looks
+more heterogeneous because the data for that year appears to have been reported by state 
+instead of county, resulting in a smaller number of distinct values overall as well as
+the range of values not being as wide.
+
+```{r}
+obesity_data <- subset(HEALTH, select = c('FIPS',
+                                          'PCT_OBESE_ADULTS10',
+                                          'PCT_OBESE_ADULTS12'))
+
+obesity_data_long <- melt(obesity_data, id.vars = 'FIPS')
+levels(obesity_data_long$variable) <- c('2010', '2012')
+
+h <- ggplot(obesity_data_long, aes(x = value)) +
+  geom_histogram(fill = 'white', color = 'black') +
+  facet_wrap('variable', switch = 'x', dir = 'v') +
+  scale_x_continuous(labels = function(x) paste0(x, '%')) +
+  xlab('Adult obesity rate') +
+  ylab('Number of counties')
+h
+
+```
+
+# 3. Mapping obesity
+
+```{r}
+# Filter out Alaska and Hawaii (and Puerto Rico)
+obesity_data_long <- obesity_data_long[!(substr(FIPS, 1, 2) %in% c('02', '15', '72'))]
+obesity_data_long$value_cat <- cut_interval(obesity_data_long$value, 7)
+
+levels(obesity_data_long$value_cat) <- gsub('^.([0-9]+).*,([0-9]+).*$',
+                                            '\\1% — \\2%',
+                                            levels(obesity_data_long$value_cat))
+
+obesity_map <- merge(counties_fort,
+                     obesity_data_long, 
+                     by.x = 'id', 
+                     by.y = 'FIPS', 
+                     allow.cartesian = TRUE)
+obesity_map <- obesity_map[order(obesity_map$order), ]
+
+green_red_pal <- colorRampPalette(c('green', 'red'))(7)
+
+m <- ggplot() +
+  geom_polygon(data = obesity_map, size = 0,
+               aes(x = long, y = lat, group = group, fill = value_cat)) +
+  facet_wrap('variable', switch = 'x', dir = 'v') +
+  coord_map('polyconic') +
+  scale_fill_manual(values = green_red_pal) +
+  guides(fill = guide_legend(title = 'Adult obesity rate', reverse = TRUE)) +
+  theme_void()
+m
+```
+
+# 4. Dashboarding obesity
+
+To acheive a dashboard-like display, we can place the two sets of graphs side-by-side.
+
+```{r}
+grid.arrange(h, m, nrow = 1)
+```
+
+
+# 5. Mapping differences
+
+Here we compute the difference in values between 2010 and 2012 and map it using two different scales. One scale will simply break the differences into "Worse", "Same", or "Better", and the second scale will divide the values into seven steps
+centered at zero, with three steps each in the positive and negative directions. These steps will be placed at multiples of
+six percent, as that will divide the scale evenly and be sufficient to capture all values.
+
+It is worth noting that the difference computed here may speak much more about the difference between a given
+county and the average for the state rather than the difference between the years 2010 and 2012.
+Without true county level data for 2012 it is difficult to know for sure.
+
+```{r}
+obesity_data[, PCT_OBESE_ADULTS10_12_DIFF := PCT_OBESE_ADULTS12 - PCT_OBESE_ADULTS10]
+
+obesity_data_diff_long <- melt(obesity_data, 
+                               id.vars = 'FIPS', 
+                               measure.vars = 'PCT_OBESE_ADULTS10_12_DIFF')
+obesity_data_diff_long <- obesity_data_diff_long[!(substr(FIPS, 1, 2) %in% c('02', 
+                                                                             '15', 
+                                                                             '72'))]
+
+
+obesity_diff_map <- merge(counties_fort, 
+                          obesity_data_diff_long, 
+                          by.x = 'id', 
+                          by.y = 'FIPS',
+                          allow.cartesian = TRUE)
+obesity_diff_map <- obesity_diff_map[order(obesity_diff_map$order), ]
+
+obesity_diff_map[, PCT_OBESE_ADULTS10_12_DIFF_CAT3 := factor(sign(value), 
+                                                             labels = c('Worse',
+                                                                        'Same', 
+                                                                        'Better'))]
+obesity_diff_map[, PCT_OBESE_ADULTS10_12_DIFF_CAT7 := cut(value, 
+                                                          breaks = c(-18, 
+                                                                     -12, 
+                                                                     -6, 
+                                                                     -.Machine$double.eps, 
+                                                                     .Machine$double.eps, 
+                                                                     6,
+                                                                     12, 
+                                                                     18))]
+cat7_labels <- c('-18% — -12%',
+                 '-12% — -6%',
+                 '-6% — 0%',
+                 '0%',
+                 '0% — 6%',
+                 '6% — 12%',
+                 '12% — 18%')
+levels(obesity_diff_map$PCT_OBESE_ADULTS10_12_DIFF_CAT7) <- cat7_labels
+
+m_cat3 <- ggplot() +
+  geom_polygon(data = obesity_diff_map,
+               aes(x = long, y = lat, group = group, fill = PCT_OBESE_ADULTS10_12_DIFF_CAT3)) +
+  coord_map('polyconic') +
+  scale_fill_manual(values = c('red', 'yellow', 'green')) +
+  guides(fill = guide_legend(title = 'Change in adult obesity rate')) +
+  theme_void() +
+  ggtitle('Mapping change in obesity rate using three levels')
+m_cat3
+
+m_cat7 <- ggplot() +
+  geom_polygon(data = obesity_diff_map,
+               aes(x = long, y = lat, group = group, fill = PCT_OBESE_ADULTS10_12_DIFF_CAT7)) +
+  coord_map('polyconic') +
+  scale_fill_manual(values = rev(green_red_pal),
+                    breaks = cat7_labels, 
+                    labels = rev(cat7_labels)) +
+  guides(fill = guide_legend(title = 'Change in adult obesity rate')) +
+  theme_void() +
+  ggtitle('Mapping change in obesity rate using seven levels')
+m_cat7
+```
+
+# 6. Dashboard Part 2
+
+Comparing these maps we can see that having more levels gives us more information about
+the rates of change, while having less levels hides some of that information.
+
+```{r}
+grid.arrange(m_cat3, m_cat7, nrow = 2)
+```
+
+# 7. Connecting to Diabetes
+
+When we plot obesity vs. diabetes and add a trend line we can see there does appear
+to be a positive correlation between the two variables.
+
+```{r}
+diabetes_and_obesity <- ggplot(HEALTH, aes(x = PCT_OBESE_ADULTS10,
+                                           y = PCT_DIABETES_ADULTS10)) +
+  geom_point() +
+  geom_smooth(method = 'lm') +
+  xlab('Adult obesity rate') +
+  ylab('Adult diabetes rate') +
+  ggtitle('Obesity vs. diabetes by county (2010)')
+diabetes_and_obesity
+```

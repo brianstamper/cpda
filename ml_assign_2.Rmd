@@ -1,0 +1,56 @@
+---
+title: "CPDA Machine Learning SP 2018"
+author: "Brian Stamper"
+date: "January 27, 2018"
+output:
+  pdf_document: default
+  word_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Assignment 2
+
+
+#### a. _Import the data into the workspace and plot it with area on x-axis and cost on y-axis._
+
+```{r}
+library(data.table)
+library(ggplot2)
+housing_data <- fread('data/HousingData.txt', col.names = c('area', 'cost'))
+p <- ggplot(housing_data, aes(x = area, y = cost)) +
+  geom_point() +
+  scale_y_continuous(labels = function(x) scales::dollar(100000 * x)) +
+  scale_x_continuous(labels = function(x) scales::comma(100 * x))
+p
+```
+
+#### b. _Use linear least squares to find the optimal values of $\theta$._
+
+We will set $H = \left[\begin{array}{cc}\mathbf{1} & \mathbf{area}\end{array}\right]$ and $y = \left[\begin{array}{c}\mathbf{cost} \end{array}\right]$ and compute $\theta_{LS}$ using
+$$\theta_{LS} = \left(H^TH\right)^{-1}H^Ty$$
+
+```{r}
+H <- cbind(1, housing_data$area)
+y <- housing_data$cost
+theta_LS <- solve(t(H) %*% H) %*% t(H) %*% y
+theta_LS
+```
+
+#### c. _Plot the hypothesis function $f\left(x\right)$ with the data._
+
+```{r}
+p + geom_abline(intercept = theta_LS[1], slope = theta_LS[2])
+```
+
+#### d. _Suppose if the area of the house is 700 sq. feet. Find the estimated price of the house in dollars._
+
+To estimate the price we can use $f\left(x\right) = X^T\theta_{LS}$ where $X = \left[\begin{array}{cc}1 \\ x\end{array}\right]$
+
+```{r}
+f <- function(x) t(rbind(1, x)) %*% theta_LS
+price_estimate <- scales::dollar(f(7) * 100000)   # convert to $100,000 scale
+print(paste('The price estimate is', price_estimate))
+```

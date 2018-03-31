@@ -1,0 +1,203 @@
+---
+title: "Assignment 3"
+output:
+  pdf_document: default
+  html_notebook: default
+  word_document: default
+---
+
+In this assignment, we will design an algorithm that will give us the cheapest flights from source to destination. We will use real flight prices from kayak.com and develop our own DP algorithm that will give us a sequence of flights whose total cost is cheaper than the cheapest (one/multi-stop) flight on kayak.com
+
+
+First, we will consider a smaller problem. Imagine that there are only 6 airports in the world and only 5 airlines.
+
+NOTE: DO NOT CHANGE THE CODE HERE. ONLY FILL CODE IN FUNCTIONS WHERE IT IS ASKED.
+
+```{r}
+airports <- c('BOM', 'NYC', 'DXB', 'LHR', 'FRA', 'DOH')
+airlines <- c('AIR_INDIA', 'BRITISH_AIRWAYS', 'EMIRATES', 
+            'QATAR_AIRWAYS', 'LUFTHANSA')
+```
+
+Read data from csv files containing flight prices. Each csv is named after an airport. The prices in that csv correspond to prices for DIRECT FLIGHT, FROM that airport. The columns of the csv represent airline chosen and ROWS represent the DESTINATION
+
+```{r}
+setwd('C:/R/cpda/assignment_3')
+
+read_csv <- function(file_name) {
+  temp <- read.csv(file_name)
+  temp2 <- temp[,-1]
+  rownames(temp2) <- temp$X
+  temp2
+}
+
+BOM <- read_csv("BOM.csv")
+NYC <- read_csv("NYC.csv")
+DXB <- read_csv("DXB.csv")
+LHR <- read_csv("LHR.csv")
+FRA <- read_csv("FRA.csv")
+DOH <- read_csv("DOH.csv")
+
+price_matrix = list(BOM, NYC, DXB, LHR, FRA, DOH) # This is same order as airports
+```
+
+## Q1: Write a function that returns the lowest cost of direct flight from BOM to NYC (3 points)
+
+Fill the function below
+```{r}
+lowest_cost_BOM_to_NYC_direct <- function() {
+  # Write your code here
+  min(BOM['NYC',])
+}
+
+(lowest_cost_BOM_to_NYC_direct())
+```
+
+## Q2: Write a function that returns the lowest cost of direct flight from one airport to another (2 points)
+
+Fill the function below
+```{r}
+lowest_cost_direct_flight <- function(from, to) {
+  # Write your code here
+  # First get index of FROM airport to check which 
+  # data frame from price matrix to use
+  # Since airports array and price_matrix has same order of airports
+  index_of_from <- which(airports==from)[1]
+  prices_from <- price_matrix[index_of_from][[1]]
+  
+  # Write your code here
+  min(prices_from[to,])
+}
+
+(lowest_cost_direct_flight('BOM', 'NYC'))
+```
+
+## Q3: Given an array of airports, write a function that outputs the lowest cost to travel from each airport in the array to any airport in the same array. The output should be an NxN matrix where N is length of array of airports. Note that diagonal elements will be 0 (5 points)
+
+Fill the function below
+```{r}
+lowest_cost_direct_flight_matrix <- function(airports) {
+  # Write your code here
+  lcdfm <- outer(airports, airports, Vectorize(lowest_cost_direct_flight))
+  rownames(lcdfm) <- airports
+  colnames(lcdfm) <- airports
+  lcdfm
+}
+
+(lowest_cost_direct_flight_matrix(airports))
+```
+
+## Q4. Here comes the main question. Find the cheapest flight from any airport to any airport which may or maynot be direct flight. (6 points)
+
+Fill the function below
+```{r}
+lowest_cost_flight_matrix <- function(airports, max_layovers) {
+  # Write your code here
+  # To move from this state to the next we need the cost of direct flights
+  lcdfm <- lowest_cost_direct_flight_matrix(airports)
+  if(max_layovers == 0) {
+    return(lcdfm)
+  } else {
+    return({
+      # Compute lowest costs by summing rows from the direct flights 
+      # with columns from the tail of the trajectory and taking the min,
+      # with the tail computed using recursion.
+      tail <- lowest_cost_flight_matrix(airports, max_layovers - 1)
+      sapply(airports, function(to) {
+        sapply(airports, function(from) {
+          min(lcdfm[from,] + tail[,to])
+        }) 
+      })
+    })
+  }
+}
+```
+
+
+Now lets check the lowest prices when max_layover is 1 and compare them with max_layover = 0 (direct flights). 
+
+```{r}
+(lowest_cost_flight_matrix(airports,1))
+(lowest_cost_flight_matrix(airports,0))
+```
+
+Lets directly print a dataframe of dollars saved by increasing max_layover. Note that the optimal flight could also be a direct flight.
+
+```{r}
+(lowest_cost_flight_matrix(airports,0)-lowest_cost_flight_matrix(airports,1))
+```
+
+Note that the large numbers in dollars saved are because there was no direct flight but there were one stop flights, so technically you saved the cost of building and flying your own long range Boeing 747
+
+We see that the lowest direct flight from BOM to NYC is \$1300 (which is actual price on kayak.com) and one stop flight is \$990. Lets see what kayak gives as the cheapest one stop flight of BOM to NYC for same dates.
+
+We see that our algorithm gives much cheaper flights than online websites! Take BOM to LHR by BRITISH_AIRWAYS then take LHR to NYC by AIR_INDIA for a total of just \$990.
+
+![Source: kayak.com](airline1.png) <!-- .element width="50%" -->
+![Source: kayak.com](airline2.png) <!-- .element width="50%" -->
+
+Try changing max_layovers to 2. You will see a significant increase in runtime! The technique of memoization solves this (Memoization was demonstrated in python tutorial).
+
+##Q5. (Bonus Question) Try to use memoization
+
+```{r}
+faster_lowest_cost_flight_matrix <- function(airports, max_layovers) {
+  token <- paste0(paste0(airports, collapse = ''), max_layovers)
+  
+  if(exists('lcfm_cache')) {
+    this_lcfm <- lcfm_cache[[token]]
+    if(is.null(this_lcfm)) {
+      this_lcfm <- lowest_cost_flight_matrix(airports, max_layovers)
+      lcfm_cache[[token]] <<- this_lcfm
+    } 
+  } else {
+    this_lcfm <- lowest_cost_flight_matrix(airports, max_layovers)
+    lcfm_cache <<- list()
+    lcfm_cache[[token]] <<- this_lcfm
+  }
+  return(this_lcfm)
+}
+```
+
+##Q6. (Bonus Question) What will happen if you try to increase number of states? Hint: Read curse of dimensionality in Dynamic Programming
+The computational complexity grows exponentially. Here we compare without using the memoization function.
+```{r}
+set.seed(0)
+
+# First some functions to make new simulated sets of airports
+airports_fun <- function(number_airports){
+  sort(paste0(sample(LETTERS, number_airports, replace = TRUE),
+              sample(LETTERS, number_airports, replace = TRUE), 
+              sample(LETTERS, number_airports, replace = TRUE)))
+}
+
+lowest_price_matrix_fun <- function(airports) {
+  number_airports <- length(airports)
+  lpm <- matrix(round(runif(number_airports^2, min = 50, max = 3500), -1), 
+                nrow = number_airports, 
+                ncol = number_airports) * (1 - diag(number_airports))
+  rownames(lpm) <- airports
+  colnames(lpm) <- airports
+  lpm
+}
+
+# Modify the direct flight function to use this new structure
+lowest_cost_direct_flight_matrix <- function(airports) {
+  lowest_price_matrix[airports, airports]
+}
+
+# Now to compare
+library(microbenchmark)
+benchmarks <- lapply(1:10 * 10, function(number_airports) {
+  airports <- airports_fun(number_airports)
+  lowest_price_matrix <<- lowest_price_matrix_fun(airports)
+  
+  mb <- microbenchmark(lowest_cost_flight_matrix(airports, 4))
+  mean(mb$time)
+})
+
+# Plotting the timings we can see a curve begin to form
+plot(x = 1:10 * 10, y = benchmarks)
+```
+
+Now build your own website that offers cheapest flight tickets for patient customers that are willing to wait for their requests!

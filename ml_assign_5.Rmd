@@ -1,0 +1,73 @@
+---
+title: "CPDA Machine Learning SP 2018"
+author: "Brian Stamper"
+date: "February 23, 2018"
+output:
+  pdf_document: default
+  word_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Assignment 5
+
+
+a. Import the data into your workspace and store it in a variable $X$. Print the dimensions of the matrix $X$. 
+
+```{r}
+X <- as.matrix(read.table('data/my_data_pca.txt', sep = ','))
+dim(X)
+```
+
+b. Compute the mean of each feature and subtract this mean from each column(samples). Let this matrix be $Y$. The dimension of $Y$ should be same as $X$, and each row of $Y$ has mean $0$.
+
+
+```{r}
+Y <- X - matrix(rowMeans(X), nrow = nrow(X), ncol = ncol(X))
+dim(Y)
+summary(round(rowMeans(Y), 12))   # Rounding off small numeric computation errors
+```
+
+c. Calculate the covariance of $Y$ given by $C = Y^TY$.
+
+```{r}
+C <- t(Y) %*% Y
+```
+
+d. Find the eigenvalues and eigenvectors of the matrix C.
+
+```{r}
+eigen_C <- eigen(C, symmetric = TRUE)
+```
+
+e. Order the eigenvalues of the matrix $C$ from the largest to smallest, and plot the ordered eigenvalues.
+
+```{r}
+# Conveniently eigen() sorts the eigenvalues in decreasing order for us.
+plot(eigen_C$values)
+```
+
+f. We wish to keep only 12 eigenvectors corresponding to 12 largest eigenvalues. Stack these 12 eigenvectors as columns of a matrix $V$.
+
+```{r}
+V <- eigen_C$vectors[, 1:12]
+```
+
+g. Find $E = YV$. The eigenfaces are given by the resultant matrix $E$. What is the dimension of $E$.
+
+```{r}
+E <- Y %*% V
+dim(E)
+```
+
+h. Convert $E$ into 12 images where each image is of dimension 85 x 60, and use image(.) function in R to display each of the 12 images.
+
+```{r, fig.width = 3, fig.height = 4}
+invisible(sapply(1:12, function(x) {
+  image(t(apply( 
+    matrix(E[, x], nrow = 85, ncol = 60),
+    2, rev)))
+}))
+```

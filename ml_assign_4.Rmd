@@ -1,0 +1,153 @@
+---
+title: "CPDA Machine Learning SP 2018"
+author: "Brian Stamper"
+date: "February 14, 2018"
+output:
+  pdf_document: default
+  word_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Assignment 4
+
+
+a. Write a code to import image_data.txt with separator ";", labels, $W^1$ and $W^2$ into the workspace and print the dimensions of each of the matrices.
+
+```{r}
+read_matrix <- function(fn, ...) as.matrix(read.table(fn, sep = ';', ...))
+image_data <- read_matrix('data/image_data.txt')
+image_labels <- read_matrix('data/labels.txt')
+W1 <- read_matrix('data/W1.txt')
+W2 <- read_matrix('data/W2.txt')
+```
+```{r}
+dim(image_data)
+dim(image_labels)
+dim(W1)
+dim(W2)
+```
+
+b. A sigmoid function is given by $\sigma\left(z\right)=\frac{1}{1+e^{-z}}$. Write a function that takes a matrix as input and gives out a matrix that consists of sigmoid of each of the element in the input matrix. Print the sigmoid of the matrix $A = \left[\begin{array}{cc}0.8558 & 0.5236\\0.6708 & 0.2988\end{array}\right]$
+
+
+```{r}
+sigmoid <- function(z) 1 / (1 + exp(-z))
+A <- matrix(c(0.8558, 0.6708, 0.5236, 0.2988), nrow = 2, ncol = 2)
+sigmoid(A)
+```
+
+c. Implement feedforward propagation steps with sigmoid activation function to predict the labels of 2500 images.
+
+```{r}
+# Computing all at once via matrix operations. 
+# Using capital S1 for the complete set of rows s1,1 .. s2500,1
+S1b <- rbind(1, t(image_data))
+S2b <- rbind(1, sigmoid(W1 %*% S1b))
+S3 <- sigmoid(W2 %*% S2b)
+predicted_labels <- apply(S3, 2, which.max)
+table(predicted_labels)
+```
+
+d. Compare your result with the actual labels given in 'labels.txt' and compute the prediction accuracy in percentage.
+
+```{r}
+scales::percent(sum(image_labels == predicted_labels) / nrow(image_labels))
+```
+
+e. Generate a random 20x20 image using runif. Plot the image. Give this image as input to the neural network (follow steps in Question c above) and print the output of the last layer of the neural network. Find the label corresponding to the largest value in the output of the last layer.
+
+```{r}#
+# There are some pieces here that could be simplified, but I chose to make the 
+# similarity to part c very clear.
+set.seed(0)
+random_image <- runif(400)
+plot(as.raster(matrix(random_image, nrow = 20, ncol = 20)))
+s1b <- rbind(1, t(matrix(random_image, nrow = 1, ncol = 400)))
+s2b <- rbind(1, sigmoid(W1 %*% s1b))
+s3 <- sigmoid(W2 %*% s2b)
+s3
+which.max(s3)
+```
+
+i) Why does the neural network classify a completely random image, which does not look like any digit?
+
+_Because it does not have a final node corresponding to "not a digit", the only option it has is to select the one of the five nodes corresponding to the digits 1 to 5._
+
+ii) Now imagine that an autonomous car is using its camera to classify cars, pedestrians etc. using neural network. There was a snowstorm and the riders of the car did not clean up the snow properly. The camera's input is disturbed by the snow flakes on the camera's lens (one could also have bug splatter on the camera's lens that disturbs its input). Would you trust the classification of the objects in the images taken by the camera? Your justification should use your intuition along with some geometric understanding of how neural network classification works.
+
+_If the classification algorithm was properly trained to recognize (classify) when the camera's input has been blocked, then hopefully we can trust that it would do so. In other words, the network needs to have nodes in the output layer that are dedicated to classifying this situation. If the car hasn't been trained for that, then it has a serious problem and I would not trust its ability to classify objects._
+
+f. How would you get around the issue stated in i) above? 
+
+_Expand the training data by adding many (perhaps 500?) cases of random noise and an additional label representing noise. The training process would have to change to allow for this sixth possibility, meaning that $W^2$ would need to be 6 x 21._
+
+
+
+```{r}
+# # Create 500 images of noise and assign label = 6 to mean noise and add this to the image data and labels
+# noise_data <- matrix(runif(500*400), nrow = 500, ncol = 400)
+# noise_labels <- matrix(rep(6, 500), nrow = 500, ncol = 1)
+# image_data <- rbind(image_data, noise_data)
+# image_labels <- rbind(image_labels, noise_labels)
+
+# Initialize a new W1 and W2, now with an extra row in W2 for the noise outcome
+W1 <- matrix(runif(20*400), nrow = 20, ncol = 400)
+b1 <- matrix(runif(20*1), nrow = 20, ncol = 1)
+W2 <- matrix(runif(5*20), nrow = 5, ncol = 20)
+b2 <- matrix(runif(5*1), nrow = 5, ncol = 1)
+
+
+
+# Create an alpha function, initially alpha = 1 then descend using alpha = g1 / (g2 + k)
+alpha <- function(k) min(1, 200 / (10 + k))
+
+# Repeating the definition of sigmoid and adding a grad_sigmoid function
+sigmoid <- function(z) 1 / (1 + exp(-z))
+grad_sigmoid <- function(z) diag(as.vector(sigmoid(z) * (1 - sigmoid(z))))
+
+number_of_iterations <- 2500
+for(k in 1:number_of_iterations) {
+ #sample_proportion <- 0.25
+ #sample_of_images <- sample(nrow(image_data), ceiling(sample_proportion * nrow(image_data)), replace = TRUE)
+ sample_of_images <- sample(nrow(image_data), 1)
+ x_i <- image_data[sample_of_images, , drop = FALSE]
+ y_i <- matrix(0, nrow = 5, ncol = 1)
+ y_i[image_labels[sample_of_images], ] <- 1
+
+ # Forward propagation (with T = 3)
+ s1 <- t(x_i)
+ z2 <- W1 %*% s1 + b1
+ s2 <- sigmoid(z2)
+ zT <- W2 %*% s2 + b2
+ sT <- sigmoid(zT)
+ 
+ # Backward propagation
+ error <- 0.5 * (sT - y_i) ^ 2
+ grad_error <- sT - y_i
+ 
+ delta_T <- sT * (1 - sT) * grad_error
+ grad_W2E <- delta_T %*% t(s2)
+ grad_b2E <- delta_T 
+ 
+ delta_2 <- s2 * (1 - s2) * t(W2) %*% delta_T
+ grad_W1E <- delta_2 %*% t(s1)
+ grad_b1E <- delta_2
+ 
+ # Update W* and b*
+ W2 <- W2 - alpha(k) * grad_W2E 
+ b2 <- b2 - alpha(k) * grad_b2E
+ W1 <- W1 - alpha(k) * grad_W1E 
+ b1 <- b1 - alpha(k) * grad_b1E
+ 
+}
+
+```
+
+
+
+
+
+

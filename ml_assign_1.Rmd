@@ -1,0 +1,79 @@
+---
+title: "CPDA Machine Learning SP 2018"
+author: "Brian Stamper"
+date: "January 16, 2018"
+output:
+  word_document: default
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Assignment 1
+
+
+```{r}
+A <- matrix(c(8, -1, 2, -1, 2, -2, 2, -2, 3), 3, 3)
+A
+```
+
+#### a. _Compute the determinant of the matrix A. What can you say about the rank of the matrix from the determinant?_
+
+The determinant of A is non-zero, therefore the rows/columns are linearly independent, and A is 3x3 so the rank is min{3, 3} = 3.
+
+```{r}
+det(A)
+```
+
+#### b. _Write a code to calculate the eigenvalues and eigenvectors of the matrix A._
+
+```{r}
+ev <- eigen(A)
+eigenvalues <- ev$values
+eigenvectors <- lapply(1:3, function(x) ev$vectors[, x])
+eigenvalues
+eigenvectors
+```
+
+#### c. _Calculate the angle between the eigenvectors corresponding to the two largest eigenvalue in degrees._
+
+Because A is symmetric, any two distinct eigenvectors should be orthogonal. (Because the first two eigenvalues are the largest, the first calculation is the actual answer, but they are all the same.)
+```{r}
+v1 <- eigenvectors[[1]]
+v2 <- eigenvectors[[2]]
+v3 <- eigenvectors[[3]]
+
+acos(sum(v1*v2) / (sqrt(sum(v1*v1)) * sqrt(sum(v2*v2)))) * (180/pi)
+acos(sum(v1*v3) / (sqrt(sum(v1*v1)) * sqrt(sum(v3*v3)))) * (180/pi)
+acos(sum(v2*v3) / (sqrt(sum(v2*v2)) * sqrt(sum(v3*v3)))) * (180/pi)
+```
+
+#### d. _Is the matrix A positive definite?_
+
+Yes, because A is symmetric and all of the eigenvalues are positive, it is positive definite.
+
+#### e. _Let T be the matrix constructed by stacking the eigenvectors of A as its columns. Calculate  T^-1^AT._
+
+T^-1^AT gives a diagonal matrix with the eigenvalues of A along the diagonal. (Here using "Tee" because "T" is reserved in R.)
+```{r}
+Tee <- matrix(c(v1, v2, v3), 3, 3)
+TeeInv <- solve(Tee)
+round(TeeInv %*% A %*% Tee, 6) # rounding to keep things readable
+```
+
+#### f. _Find the trace of the matrix A._
+
+The trace of the matrix is equal to the sum of the diagonals and also is equal to the sum of the eigenvalues.
+```{r}
+sum(A * diag(3)) # element-wise multiplication with the identity matrix
+sum(eigenvalues)
+```
+
+#### g. _Find A^2._
+
+```{r}
+A %*% A
+```
