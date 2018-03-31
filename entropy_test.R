@@ -1,9 +1,10 @@
+library(data.table)
+
 p <- sample(1:100, 1)
 q <- sample(1:100, 1)
 k1 <- data.table(v1 = c(rep(TRUE, p), rep(FALSE, q)), v2 = TRUE)
 k2 <- data.table(v1 = c(rep(TRUE, p), rep(FALSE, q)), v2 = FALSE)
 k <- rbind(k1, k2)
-
 
 my_sims <- rbindlist(lapply(1:1000, function(x) {
   p1 <- runif(1)
@@ -13,7 +14,6 @@ my_sims <- rbindlist(lapply(1:1000, function(x) {
   h1 <- entropy(k$v1)
   h2 <- entropy(k$v2)
   ig <- info_gain(k$v1, k$v2)
-  
   data.table(p1, p2, h1, h2, ig) 
 }))
 
