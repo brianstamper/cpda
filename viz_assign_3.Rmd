@@ -14,7 +14,6 @@ knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
 ```{r}
 library(ggplot2)
 library(data.table)
-
 library(readxl)
 
 # Read all of the sheets from the Excel data as `data.table`.
@@ -24,20 +23,21 @@ invisible(lapply(excel_sheets('data/Clinical_Alarms_Data_20150203 .xlsx'), funct
          envir = .GlobalEnv)
 }))
 
-combined_data <- merge(merge(merge(Cross.Checking, 
-                                   Alarm.Observation.Data,
-                                   by = 'AlarmObsID', 
-                                   all.x = TRUE, 
-                                   suffixes = c('', '_Alarm.Observation.Data')),
-                             Machine.Data,
-                             by = 'EVENT_ID',
-                             all.x = TRUE,
-                             suffixes = c('', '_Machine.Data')),
-                       Sessions,
-                       by.x = 'Session ID',
-                       by.y = 'ObservationID',
-                       all.x = TRUE,
-                       suffixes = c('', '_Sessions'))
+combined_data <- #merge(
+  merge(merge(Cross.Checking, 
+              Alarm.Observation.Data[!is.na(AlarmObsID)],
+              by = 'AlarmObsID', 
+              all.x = TRUE,
+              suffixes = c('', '_Alarm.Observation.Data')),
+        #Machine.Data,
+        #by = 'EVENT_ID',
+        #all.x = TRUE,
+        #suffixes = c('', '_Machine.Data')),
+        Sessions,
+        by.x = 'Session ID',
+        by.y = 'ObservationID',
+        all.x = TRUE,
+        suffixes = c('', '_Sessions'))
 
 alarm_categorizer <- function(x, y) {
   ss <- substr(x, 1, 5)
@@ -46,12 +46,12 @@ alarm_categorizer <- function(x, y) {
   ss[ss == 'V FIB'] <- 'crisis'
   ss[ss == 'HR HI'] <- 'warning'
   ss[ss == 'HR LO'] <- 'warning'
-  ss[ss == 'SPO2 '] <- 'warning'
+  ss[ss == 'SPO2 ' | ss == 'SPO2'] <- 'warning'
   ss[ss == 'BRADY'] <- 'warning'
   ss[ss == 'NBP S'] <- 'warning'
   ss[ss == 'V BRA'] <- 'warning'
   ss[ss == 'TACHY'] <- 'warning'
-  ss[ss == 'VT > '] <- 'warning'
+  ss[ss == 'VT > ' | ss == 'VT>2'] <- 'warning'
   ss[ss == 'CHNGE'] <- 'technical'
   ss[ss == 'NBP M'] <- 'technical'
   ss[ss == 'RR LE'] <- 'technical'
@@ -63,5 +63,39 @@ alarm_categorizer <- function(x, y) {
 }
 
 combined_data[, alarm_category := alarm_categorizer(FIXED_INFO, Unit)]
+
+combined_data <- subset(combined_data,
+                        subset = alarm_category %in% c('crisis', 'warning', 'technical'),
+                        select = c('Session ID',
+                                   'AlarmObsID',
+                                   'EVENT_ID',
+                                   'FIXED_INFO',
+                                   'TIME_POSTED',
+                                   'DURATION',
+                                   'TFU',
+                                   'Hospital',
+                                   'Unit',
+                                   'Do we have behavior data?',
+                                   'Do we have machine data?',
+                                   'Do we have observation data?',
+                                   'NumOnECG',
+                                   'NumOnSpO2',
+                                   'alarm_category'))
+
+combined_data[, hour_of_day := factor(hour(TIME_POSTED))]
+
+```
+
+
+```{r}
+
+ggplot()
+
+ggplot(combined_data, aes(x = log(DURATION), color = hour_of_day)) +
+  geom_density()
+
+ggplot(combined_data, aes(x = hour_of_day, y = log(DURATION))) +
+  geom_boxplot()
+
 
 ```
